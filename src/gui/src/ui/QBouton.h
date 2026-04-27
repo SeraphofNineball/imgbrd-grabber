@@ -2,6 +2,7 @@
 #define HEADER_QBOUTON
 
 #include <QPushButton>
+#include <QPointingDevice>
 #include <QVariant>
 
 
@@ -12,7 +13,9 @@ class QBouton : public QPushButton
 	public:
 		explicit QBouton(QVariant id = 0, bool resizeInsteadOfCropping = false, bool smartSizeHint = false, int border = 0, QColor color = QColor(), QWidget *parent = nullptr);
 		QVariant id() const;
+		bool event(QEvent *event) override;
 		void mousePressEvent(QMouseEvent *event) override;
+		void tabletEvent(QTabletEvent *event) override;
 		QSize sizeHint() const override;
 		void resizeEvent(QResizeEvent *event) override;
 

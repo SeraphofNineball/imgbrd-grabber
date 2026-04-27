@@ -2,19 +2,25 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGesture>
+#include <QGestureEvent>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
+#include <QPointingDevice>
 #include <QScreen>
 #include <QScrollBar>
 #include <QShortcut>
+#include <QTabletEvent>
+#include <QTouchEvent>
 #include <QUrl>
 #include <QVideoWidget>
 #include <QWheelEvent>
@@ -49,6 +55,10 @@ ViewerWindow::ViewerWindow(QList<QSharedPointer<Image>> images, const QSharedPoi
 	: QWidget(nullptr, Qt::Window), m_parent(parent), m_tab(tab), m_profile(profile), m_favorites(profile->getFavorites()), m_viewItLater(profile->getKeptForLater()), m_ignore(profile->getIgnored()), m_settings(profile->getSettings()), ui(new Ui::ViewerWindow), m_site(site), m_timeout(300), m_tooBig(false), m_loadedImage(false), m_loadedDetails(false), m_finished(false), m_size(0), m_isFullscreen(false), m_isSlideshowRunning(false), m_images(std::move(images)), m_displayImage(QPixmap()), m_labelImageScaled(false)
 {
 	setAttribute(Qt::WA_DeleteOnClose);
+	setAttribute(Qt::WA_AcceptTouchEvents, true);
+	grabGesture(Qt::PinchGesture);
+	grabGesture(Qt::TapGesture);
+	grabGesture(Qt::TapAndHoldGesture);
 	connect(parent, &MainWindow::destroyed, this, &QWidget::deleteLater);
 
 	ui->setupUi(this);
@@ -907,16 +917,44 @@ void ViewerWindow::update(bool onlySize, bool force)
 		return;
 	}
 
-	const bool needScaling = m_settings->value("Viewer/scaleUp", false).toBool()
-		|| m_displayImage.width() > m_labelImage->width()
-		|| m_displayImage.height() > m_labelImage->height();
-	if (needScaling && (onlySize || m_loadedImage || force)) {
-		const Qt::TransformationMode mode = onlySize ? Qt::FastTransformation : Qt::SmoothTransformation;
-		m_labelImage->setImage(m_displayImage.scaled(m_labelImage->width(), m_labelImage->height(), Qt::KeepAspectRatio, mode));
+	const Qt::TransformationMode mode = onlySize ? Qt::FastTransformation : Qt::SmoothTransformation;
+
+	if (m_touchZoomFactor != 1.0) {
+		// Compute the size the image would be at "fit to window" zoom level
+		const QSize labelSize = m_labelImage->size();
+		const QSizeF imgSize = m_displayImage.size();
+		const qreal fitScale = qMin(
+			static_cast<qreal>(labelSize.width()) / imgSize.width(),
+			static_cast<qreal>(labelSize.height()) / imgSize.height()
+		);
+		const QSize zoomedSize(
+			qRound(imgSize.width()  * fitScale * m_touchZoomFactor),
+			qRound(imgSize.height() * fitScale * m_touchZoomFactor)
+		);
+		QPixmap scaled = m_displayImage.scaled(zoomedSize, Qt::KeepAspectRatio, mode);
+
+		if (scaled.width() > labelSize.width() || scaled.height() > labelSize.height()) {
+			// Crop to viewport, centering with optional pan offset
+			const int maxPanX = qMax(0, scaled.width()  - labelSize.width());
+			const int maxPanY = qMax(0, scaled.height() - labelSize.height());
+			const int panX = qBound(0, (scaled.width()  - labelSize.width())  / 2 + qRound(m_touchPanOffset.x()), maxPanX);
+			const int panY = qBound(0, (scaled.height() - labelSize.height()) / 2 + qRound(m_touchPanOffset.y()), maxPanY);
+			scaled = scaled.copy(panX, panY, qMin(labelSize.width(), scaled.width()), qMin(labelSize.height(), scaled.height()));
+		}
+
+		m_labelImage->setImage(scaled);
 		m_labelImageScaled = true;
-	} else if (m_loadedImage || force || (m_labelImageScaled && !needScaling)) {
-		m_labelImage->setImage(m_displayImage);
-		m_labelImageScaled = false;
+	} else {
+		const bool needScaling = m_settings->value("Viewer/scaleUp", false).toBool()
+			|| m_displayImage.width() > m_labelImage->width()
+			|| m_displayImage.height() > m_labelImage->height();
+		if (needScaling && (onlySize || m_loadedImage || force)) {
+			m_labelImage->setImage(m_displayImage.scaled(m_labelImage->width(), m_labelImage->height(), Qt::KeepAspectRatio, mode));
+			m_labelImageScaled = true;
+		} else if (m_loadedImage || force || (m_labelImageScaled && !needScaling)) {
+			m_labelImage->setImage(m_displayImage);
+			m_labelImageScaled = false;
+		}
 	}
 
 	m_stackedWidget->setCurrentWidget(m_labelImage);
@@ -1293,6 +1331,10 @@ void ViewerWindow::load(const QSharedPointer<Image> &image)
 	m_size = 0;
 	ui->labelLoadingError->hide();
 
+	// Reset touch zoom/pan state for each new image
+	m_touchZoomFactor = 1.0;
+	m_touchPanOffset = QPointF(0, 0);
+
 	// Show the thumbnail if the image was not already preloaded
 	if (isVisible()) {
 		showThumbnail();
@@ -1418,6 +1460,102 @@ void ViewerWindow::openFile(bool now)
 	m_pendingAction = PendingNothing;
 }
 
+bool ViewerWindow::event(QEvent *event)
+{
+	switch (event->type()) {
+		case QEvent::Gesture:
+			return handleGestureEvent(static_cast<QGestureEvent *>(event));
+		case QEvent::TouchBegin:
+		case QEvent::TouchUpdate:
+		case QEvent::TouchEnd:
+			return handleTouchEvent(static_cast<QTouchEvent *>(event));
+		default:
+			return QWidget::event(event);
+	}
+}
+
+bool ViewerWindow::handleGestureEvent(QGestureEvent *event)
+{
+	// Pinch: zoom in/out around image center
+	QGesture *pinchRaw = event->gesture(Qt::PinchGesture);
+	if (pinchRaw) {
+		auto *pinch = static_cast<QPinchGesture *>(pinchRaw);
+		if (pinch->state() == Qt::GestureStarted) {
+			m_pinchStartZoom      = m_touchZoomFactor;
+			m_pinchStartPanOffset = m_touchPanOffset;
+		} else if (pinch->state() == Qt::GestureUpdated || pinch->state() == Qt::GestureFinished) {
+			const qreal newZoom = qBound(0.25, m_pinchStartZoom * pinch->totalScaleFactor(), 8.0);
+			// Scale the existing pan offset so the same image center stays in view
+			if (m_pinchStartZoom > 0.0) {
+				m_touchPanOffset = m_pinchStartPanOffset * (newZoom / m_pinchStartZoom);
+			}
+			m_touchZoomFactor = newZoom;
+			update(true, true);
+		}
+	}
+
+	// Tap: double-tap to reset zoom; single tap otherwise ignored
+	QGesture *tapRaw = event->gesture(Qt::TapGesture);
+	if (tapRaw) {
+		auto *tap = static_cast<QTapGesture *>(tapRaw);
+		if (tap->state() == Qt::GestureFinished) {
+			const QPointF pos = tap->position();
+			if (m_lastTapTimer.isValid() && m_lastTapTimer.elapsed() < 300
+				&& (pos - m_lastTapPos).manhattanLength() < 60) {
+				// Double-tap: reset zoom and pan
+				m_touchZoomFactor = 1.0;
+				m_touchPanOffset  = QPointF(0, 0);
+				update(false, true);
+				m_lastTapTimer.invalidate();
+			} else {
+				m_lastTapTimer.restart();
+				m_lastTapPos = pos;
+			}
+		}
+	}
+
+	// Long-press: open image context menu
+	QGesture *holdRaw = event->gesture(Qt::TapAndHoldGesture);
+	if (holdRaw && holdRaw->state() == Qt::GestureFinished) {
+		imageContextMenu();
+	}
+
+	return true;
+}
+
+bool ViewerWindow::handleTouchEvent(QTouchEvent *event)
+{
+	const auto &points = event->points();
+
+	if (event->type() == QEvent::TouchBegin && points.size() == 1) {
+		m_touchSwipeStart     = points.first().position();
+		m_touchSwipeStartTime = QDateTime::currentMSecsSinceEpoch();
+	} else if (event->type() == QEvent::TouchUpdate && points.size() == 1 && m_touchZoomFactor > 1.0) {
+		// Single-finger pan when zoomed in
+		const QPointF delta = points.first().position() - points.first().lastPosition();
+		m_touchPanOffset -= delta; // dragging right reveals left side → offset decreases
+		update(true, true);
+	} else if (event->type() == QEvent::TouchEnd && points.size() == 1) {
+		const QPointF endPos  = points.first().position();
+		const QPointF delta   = endPos - m_touchSwipeStart;
+		const qint64  elapsed = QDateTime::currentMSecsSinceEpoch() - m_touchSwipeStartTime;
+
+		// Swipe to navigate: fast, mostly horizontal, at least 80 px, only when not zoomed
+		if (elapsed < 600 && m_touchZoomFactor <= 1.0
+			&& qAbs(delta.x()) > 80
+			&& qAbs(delta.x()) > qAbs(delta.y()) * 1.5) {
+			if (delta.x() < 0) {
+				next();
+			} else {
+				previous();
+			}
+		}
+	}
+
+	event->accept();
+	return true;
+}
+
 void ViewerWindow::mouseReleaseEvent(QMouseEvent *event)
 {
 	// Close the window on middle click if the setting is enabled
@@ -1430,6 +1568,44 @@ void ViewerWindow::mouseReleaseEvent(QMouseEvent *event)
 	}
 
 	QWidget::mouseReleaseEvent(event);
+}
+
+void ViewerWindow::tabletEvent(QTabletEvent *event)
+{
+	if (event->type() == QEvent::TabletPress) {
+		m_tabletPressPos = event->position();
+		event->accept();
+	} else if (event->type() == QEvent::TabletRelease) {
+		const QPointF delta = event->position() - m_tabletPressPos;
+
+		// Barrel button or eraser: show context menu
+		if (event->buttons().testFlag(Qt::RightButton)
+			|| event->pointingDevice()->pointerType() == QPointingDevice::PointerType::Eraser) {
+			imageContextMenu();
+			event->accept();
+			return;
+		}
+
+		// Stylus swipe: navigate images (fast horizontal stroke, not zoomed)
+		if (m_touchZoomFactor <= 1.0
+			&& qAbs(delta.x()) > 100
+			&& qAbs(delta.x()) > qAbs(delta.y()) * 1.5) {
+			if (delta.x() < 0) {
+				next();
+			} else {
+				previous();
+			}
+			event->accept();
+			return;
+		}
+
+		// Anything else: let Qt synthesize the mouse release
+		event->ignore();
+	} else if (event->type() == QEvent::TabletMove) {
+		event->accept();
+	} else {
+		event->ignore();
+	}
 }
 
 void ViewerWindow::wheelEvent(QWheelEvent *event)

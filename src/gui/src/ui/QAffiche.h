@@ -3,6 +3,7 @@
 
 #include <QLabel>
 #include <QVariant>
+#include <QPointingDevice>
 
 
 class QAffiche : public QLabel
@@ -40,12 +41,14 @@ class QAffiche : public QLabel
 
 	protected:
 		// void paintEvent(QPaintEvent *event);
+		bool event(QEvent *event) override;
 		void mouseDoubleClickEvent(QMouseEvent *event) override;
 		void mousePressEvent(QMouseEvent *event) override;
 		void mouseReleaseEvent(QMouseEvent *event) override;
 		void enterEvent(QEnterEvent *event) override;
 		void leaveEvent(QEvent *event) override;
 		void resizeEvent(QResizeEvent *event) override;
+		void tabletEvent(QTabletEvent *event) override;
 		bool hitLabel(QPoint point);
 		bool m_pressed;
 		QVariant m_id;

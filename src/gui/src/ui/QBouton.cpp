@@ -1,13 +1,20 @@
 #include "ui/QBouton.h"
+#include <QGestureEvent>
+#include <QGesture>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QPointingDevice>
+#include <QTabletEvent>
 #include <QtMath>
 
 
 QBouton::QBouton(QVariant id, bool resizeInsteadOfCropping, bool smartSizeHint, int border, QColor color, QWidget *parent)
 	: QPushButton(parent), m_id(std::move(id)), m_resizeInsteadOfCropping(resizeInsteadOfCropping), m_smartSizeHint(smartSizeHint), m_penColor(color), m_border(border), m_center(true), m_progress(0), m_progressMax(0), m_invertToggle(false), m_counter(QString())
-{}
+{
+	setAttribute(Qt::WA_AcceptTouchEvents, true);
+	grabGesture(Qt::TapAndHoldGesture);
+}
 
 void QBouton::scale(const QPixmap &image, QSize bounds)
 {
@@ -165,6 +172,40 @@ QSize QBouton::sizeHint() const
 
 	QSize current = size();
 	return getIconSize(current.width(), current.height(), true);
+}
+
+bool QBouton::event(QEvent *event)
+{
+	if (event->type() == QEvent::Gesture) {
+		auto *ge = static_cast<QGestureEvent *>(event);
+		QGesture *hold = ge->gesture(Qt::TapAndHoldGesture);
+		if (hold && hold->state() == Qt::GestureFinished) {
+			emit this->rightClick(m_id);
+			emit this->rightClick(m_id.toString());
+			emit this->rightClick(m_id.toInt());
+		}
+		return true;
+	}
+	return QPushButton::event(event);
+}
+
+// Handles stylus/pen input: barrel button or eraser end → right-click, tip → normal mouse synthesis.
+void QBouton::tabletEvent(QTabletEvent *event)
+{
+	const bool isRightAction = event->buttons().testFlag(Qt::RightButton)
+		|| event->pointingDevice()->pointerType() == QPointingDevice::PointerType::Eraser;
+
+	if (isRightAction) {
+		if (event->type() == QEvent::TabletRelease) {
+			emit this->rightClick(m_id);
+			emit this->rightClick(m_id.toString());
+			emit this->rightClick(m_id.toInt());
+		}
+		event->accept();
+	} else {
+		// Pen tip: let Qt synthesize the standard mouse press so the button activates normally
+		event->ignore();
+	}
 }
 
 void QBouton::mousePressEvent(QMouseEvent *event)

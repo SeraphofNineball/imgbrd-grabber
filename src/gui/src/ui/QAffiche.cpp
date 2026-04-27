@@ -1,7 +1,11 @@
 #include "ui/QAffiche.h"
+#include <QGestureEvent>
+#include <QGesture>
 #include <QMouseEvent>
 #include <QMovie>
+#include <QPointingDevice>
 #include <QResizeEvent>
+#include <QTabletEvent>
 
 
 QAffiche::QAffiche(const QVariant &id, int border, QColor color, QWidget *parent)
@@ -12,6 +16,50 @@ QAffiche::QAffiche(const QVariant &id, int border, QColor color, QWidget *parent
 	m_border = border;
 	m_color = color;
 	setText(QString());
+
+	setAttribute(Qt::WA_AcceptTouchEvents, true);
+	grabGesture(Qt::TapAndHoldGesture);
+}
+
+bool QAffiche::event(QEvent *event)
+{
+	if (event->type() == QEvent::Gesture) {
+		auto *ge = static_cast<QGestureEvent *>(event);
+		QGesture *hold = ge->gesture(Qt::TapAndHoldGesture);
+		if (hold && hold->state() == Qt::GestureFinished) {
+			m_lastPressed = Qt::RightButton;
+			emit rightClicked();
+			emit rightClicked(m_id.toInt());
+			emit rightClicked(m_id.toString());
+		}
+		return true;
+	}
+	return QLabel::event(event);
+}
+
+// Handles stylus/pen input: barrel button or eraser end → right-click, tip → normal mouse synthesis.
+void QAffiche::tabletEvent(QTabletEvent *event)
+{
+	const bool isRightAction = event->buttons().testFlag(Qt::RightButton)
+		|| event->pointingDevice()->pointerType() == QPointingDevice::PointerType::Eraser;
+
+	if (isRightAction) {
+		if (event->type() == QEvent::TabletPress) {
+			m_lastPressed = Qt::RightButton;
+			m_pressed = true;
+		} else if (event->type() == QEvent::TabletRelease && m_pressed) {
+			m_pressed = false;
+			if (hitLabel(event->position().toPoint())) {
+				emit rightClicked();
+				emit rightClicked(m_id.toInt());
+				emit rightClicked(m_id.toString());
+			}
+		}
+		event->accept();
+	} else {
+		// Pen tip: let Qt synthesize the standard mouse press/release
+		event->ignore();
+	}
 }
 
 void QAffiche::mouseDoubleClickEvent(QMouseEvent *event)

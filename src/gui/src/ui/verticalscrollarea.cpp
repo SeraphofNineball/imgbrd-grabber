@@ -8,6 +8,8 @@ VerticalScrollArea::VerticalScrollArea(QWidget *parent)
 	setWidgetResizable(true);
 	setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	// Enable touch-based scrolling on touchscreen / stylus devices
+	viewport()->setAttribute(Qt::WA_AcceptTouchEvents, true);
 	updateWidgetSize();
 }
 

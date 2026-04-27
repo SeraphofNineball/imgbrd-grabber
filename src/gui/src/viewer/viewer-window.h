@@ -2,6 +2,7 @@
 #define VIEWER_WINDOW_H
 
 #include <QElapsedTimer>
+#include <QPointF>
 #include <QPointer>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -25,6 +26,9 @@ namespace Ui
 
 class GifPlayer;
 class QAffiche;
+class QGestureEvent;
+class QTabletEvent;
+class QTouchEvent;
 class Profile;
 class MainWindow;
 class DetailsWindow;
@@ -102,10 +106,12 @@ class ViewerWindow : public QWidget
 		void previous();
 
 	protected:
+		bool event(QEvent *event) override;
 		void closeEvent(QCloseEvent *event) override;
 		void resizeEvent(QResizeEvent *event) override;
 		void showEvent(QShowEvent *event) override;
 		void mouseReleaseEvent(QMouseEvent *event) override;
+		void tabletEvent(QTabletEvent *event) override;
 		void wheelEvent(QWheelEvent *event) override;
 		void draw();
 
@@ -114,6 +120,8 @@ class ViewerWindow : public QWidget
 		void showThumbnail();
 		int firstNonBlacklisted(int direction);
 		Qt::Alignment getAlignments(const QString &type);
+		bool handleGestureEvent(QGestureEvent *event);
+		bool handleTouchEvent(QTouchEvent *event);
 
 	signals:
 		void linkClicked(const QString &);
@@ -167,6 +175,17 @@ class ViewerWindow : public QWidget
 		bool m_labelImageScaled;
 		GifPlayer *m_gifPlayer = nullptr;
 		VideoPlayer *m_videoPlayer = nullptr;
+
+		// Touch / stylus state
+		qreal m_touchZoomFactor = 1.0;
+		QPointF m_touchPanOffset;
+		qreal m_pinchStartZoom = 1.0;
+		QPointF m_pinchStartPanOffset;
+		QPointF m_touchSwipeStart;
+		qint64 m_touchSwipeStartTime = 0;
+		QElapsedTimer m_lastTapTimer;
+		QPointF m_lastTapPos;
+		QPointF m_tabletPressPos;
 
 		// Buttons
 		std::unordered_map<QString, ButtonInstance> m_buttons;
