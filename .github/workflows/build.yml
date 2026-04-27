@@ -11,6 +11,7 @@ on:
       - '**.md'
     branches-ignore:
       - crowdin
+  workflow_dispatch:
 
 env:
   QT_VERSION: 6.6.3
